@@ -203,7 +203,6 @@ class ImageListener:
             rgb_msg_refined.header.stamp = rgb_frame_stamp
             rgb_msg_refined.header.frame_id = rgb_frame_id
             self.image_refined_pub.publish(rgb_msg_refined)
-        import pdb; pdb.set_trace()
 
 
 def parse_args():
