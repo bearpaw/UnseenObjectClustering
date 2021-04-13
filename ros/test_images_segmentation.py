@@ -27,11 +27,17 @@ import rospy
 import copy
 
 from sensor_msgs.msg import Image, CameraInfo
-from cv_bridge import CvBridge, CvBridgeError
+import ros_numpy
 from fcn.config import cfg, cfg_from_file, get_output_dir
 from fcn.test_dataset import test_sample
 from utils.mask import visualize_segmentation
+from utils.blob import pad_im
 lock = threading.Lock()
+
+def imresize(im, scale, interpolation=cv2.INTER_NEAREST):
+    w, h = im.shape[1], im.shape[0]
+    new_w, new_h = int(w * scale), int(h * scale)
+    return cv2.resize(im, (new_w, new_h), interpolation = interpolation)
 
 
 def compute_xyz(depth_img, fx, fy, px, py, height, width):
@@ -45,11 +51,11 @@ def compute_xyz(depth_img, fx, fy, px, py, height, width):
 
 class ImageListener:
 
-    def __init__(self, network, network_crop):
+    def __init__(self, network, network_crop, scale):
 
         self.network = network
         self.network_crop = network_crop
-        self.cv_bridge = CvBridge()
+        self.scale = scale
 
         self.im = None
         self.depth = None
@@ -90,10 +96,10 @@ class ImageListener:
 
         # update camera intrinsics
         intrinsics = np.array(msg.K).reshape(3, 3)
-        self.fx = intrinsics[0, 0]
-        self.fy = intrinsics[1, 1]
-        self.px = intrinsics[0, 2]
-        self.py = intrinsics[1, 2]
+        self.fx = intrinsics[0, 0] * scale
+        self.fy = intrinsics[1, 1] * scale
+        self.px = intrinsics[0, 2] * scale
+        self.py = intrinsics[1, 2] * scale
         print(intrinsics)
 
         queue_size = 1
@@ -103,25 +109,28 @@ class ImageListener:
 
 
     def callback_rgbd(self, rgb, depth):
-
+        depth_cv = ros_numpy.numpify(depth)
         if depth.encoding == '32FC1':
-            depth_cv = self.cv_bridge.imgmsg_to_cv2(depth)
+            pass
         elif depth.encoding == '16UC1':
-            depth_cv = self.cv_bridge.imgmsg_to_cv2(depth).copy().astype(np.float32)
-            depth_cv /= 1000.0
+            depth_cv = depth_cv.astype(np.float32)
+            depth_cv /= 1000.0  # to meter
         else:
             rospy.logerr_throttle(
                 1, 'Unsupported depth type. Expected 16UC1 or 32FC1, got {}'.format(
                     depth.encoding))
             return
-
-        im = self.cv_bridge.imgmsg_to_cv2(rgb, 'bgr8')
+            
+        im = ros_numpy.numpify(rgb)[:, :, :3]
 
         # rescale image if necessary
-        if cfg.TEST.SCALES_BASE[0] != 1:
-            im_scale = cfg.TEST.SCALES_BASE[0]
-            im = pad_im(cv2.resize(im, None, None, fx=im_scale, fy=im_scale, interpolation=cv2.INTER_LINEAR), 16)
-            depth_cv = pad_im(cv2.resize(depth_cv, None, None, fx=im_scale, fy=im_scale, interpolation=cv2.INTER_NEAREST), 16)
+        if self.scale != 1:
+            im = imresize(im, scale=self.scale, interpolation=cv2.INTER_LINEAR)
+            depth_cv = imresize(depth_cv, scale=self.scale)
+        # if cfg.TEST.SCALES_BASE[0] != 1:
+        #     im_scale = cfg.TEST.SCALES_BASE[0]
+        #     im = pad_im(cv2.resize(im, None, None, fx=im_scale, fy=im_scale, interpolation=cv2.INTER_LINEAR), 16)
+        #     depth_cv = pad_im(cv2.resize(depth_cv, None, None, fx=im_scale, fy=im_scale, interpolation=cv2.INTER_NEAREST), 16)
 
         with lock:
             self.im = im.copy()
@@ -161,10 +170,9 @@ class ImageListener:
 
         # publish segmentation mask
         label = out_label[0].cpu().numpy()
-        label_msg = self.cv_bridge.cv2_to_imgmsg(label.astype(np.uint8))
+        label_msg = ros_numpy.msgify(Image, label.astype(np.uint8), 'mono8')
         label_msg.header.stamp = rgb_frame_stamp
         label_msg.header.frame_id = rgb_frame_id
-        label_msg.encoding = 'mono8'
         self.label_pub.publish(label_msg)
 
         num_object = len(np.unique(label)) - 1
@@ -172,22 +180,21 @@ class ImageListener:
 
         if out_label_refined is not None:
             label_refined = out_label_refined[0].cpu().numpy()
-            label_msg_refined = self.cv_bridge.cv2_to_imgmsg(label_refined.astype(np.uint8))
+            label_msg_refined = ros_numpy.msgify(Image, label_refined.astype(np.uint8), 'mono8')
             label_msg_refined.header.stamp = rgb_frame_stamp
             label_msg_refined.header.frame_id = rgb_frame_id
-            label_msg_refined.encoding = 'mono8'
             self.label_refined_pub.publish(label_msg_refined)
 
         # publish segmentation images
         im_label = visualize_segmentation(im_color[:, :, (2, 1, 0)], label, return_rgb=True)
-        rgb_msg = self.cv_bridge.cv2_to_imgmsg(im_label, 'rgb8')
+        rgb_msg = ros_numpy.msgify(Image, im_label, 'rgb8')
         rgb_msg.header.stamp = rgb_frame_stamp
         rgb_msg.header.frame_id = rgb_frame_id
         self.image_pub.publish(rgb_msg)
 
         if out_label_refined is not None:
             im_label_refined = visualize_segmentation(im_color[:, :, (2, 1, 0)], label_refined, return_rgb=True)
-            rgb_msg_refined = self.cv_bridge.cv2_to_imgmsg(im_label_refined, 'rgb8')
+            rgb_msg_refined = ros_numpy.msgify(Image, im_label_refined, 'rgb8')
             rgb_msg_refined.header.stamp = rgb_frame_stamp
             rgb_msg_refined.header.frame_id = rgb_frame_id
             self.image_refined_pub.publish(rgb_msg_refined)
@@ -202,6 +209,8 @@ def parse_args():
                         default=0, type=int)
     parser.add_argument('--instance', dest='instance_id', help='PoseCNN instance id to use',
                         default=0, type=int)
+    parser.add_argument('--scale', dest='scale', help='input image scale',
+                        default=1., type=float)
     parser.add_argument('--pretrained', dest='pretrained',
                         help='initialize with pretrained checkpoint',
                         default=None, type=str)
@@ -221,6 +230,10 @@ def parse_args():
                         default=None, type=str)
     parser.add_argument('--background', dest='background_name',
                         help='name of the background file',
+                        default=None, type=str)
+    parser.add_argument('--camera', dest='ros_camera',
+                        help='name of the camera choices: D415, Azure',
+                        choices=['D415', 'Azure'],
                         default=None, type=str)
 
     if len(sys.argv) == 1:
@@ -246,6 +259,10 @@ if __name__ == '__main__':
     if not args.randomize:
         # fix the random seeds (numpy and caffe) for reproducibility
         np.random.seed(cfg.RNG_SEED)
+    
+    # camera
+    if args.ros_camera is not None:
+        cfg.TEST.ROS_CAMERA = args.ros_camera
 
     # device
     cfg.gpu_id = 0
@@ -279,6 +296,6 @@ if __name__ == '__main__':
         network_crop = None
 
     # image listener
-    listener = ImageListener(network, network_crop)
+    listener = ImageListener(network, network_crop, args.scale)
     while not rospy.is_shutdown():
        listener.run_network()
