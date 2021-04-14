@@ -69,7 +69,7 @@ TEST:
   IMS_PER_BATCH: 1
   HOUGH_SKIP_PIXELS: 10
   DET_THRESHOLD: 0.1
-  SCALES_BASE: !!python/tuple [0.5]
+  SCALES_BASE: !!python/tuple [1.]
   VISUALIZE: False
   SYNTHESIZE: True
   POSE_REFINE: False

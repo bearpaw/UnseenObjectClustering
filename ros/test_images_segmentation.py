@@ -173,7 +173,7 @@ class ImageListener:
             label = cv2.resize(label, None, None, fx=1./self.im_scale, fy=1./self.im_scale, interpolation=cv2.INTER_NEAREST)
             label = label[0:self.height, 0:self.width]
         label_msg = ros_numpy.msgify(Image, label.astype(np.uint8), encoding='mono8')
-        label_msg.header.stamp = rgb_frame_stamp
+        label_msg.header.stamp = rospy.Time.now()
         label_msg.header.frame_id = rgb_frame_id
         self.label_pub.publish(label_msg)
 
@@ -186,21 +186,21 @@ class ImageListener:
                 label_refined = cv2.resize(label_refined, None, None, fx=1./self.im_scale, fy=1./self.im_scale, interpolation=cv2.INTER_NEAREST)
                 label_refined = label_refined[0:self.height, 0:self.width]
             label_msg_refined = ros_numpy.msgify(Image, label_refined.astype(np.uint8), encoding='mono8')
-            label_msg_refined.header.stamp = rgb_frame_stamp
+            label_msg_refined.header.stamp = rospy.Time.now()
             label_msg_refined.header.frame_id = rgb_frame_id
             self.label_refined_pub.publish(label_msg_refined)
 
         # publish segmentation images
         im_label = visualize_segmentation(self.original_im[:, :, (2, 1, 0)], label, return_rgb=True)
         rgb_msg = ros_numpy.msgify(Image, im_label, encoding = 'rgb8')
-        rgb_msg.header.stamp = rgb_frame_stamp
+        rgb_msg.header.stamp = rospy.Time.now()
         rgb_msg.header.frame_id = rgb_frame_id
         self.image_pub.publish(rgb_msg)
 
         if out_label_refined is not None:
             im_label_refined = visualize_segmentation(self.original_im[:, :, (2, 1, 0)], label_refined, return_rgb=True)
             rgb_msg_refined = ros_numpy.msgify(Image, im_label_refined, encoding = 'rgb8')
-            rgb_msg_refined.header.stamp = rgb_frame_stamp
+            rgb_msg_refined.header.stamp = rospy.Time.now()
             rgb_msg_refined.header.frame_id = rgb_frame_id
             self.image_refined_pub.publish(rgb_msg_refined)
 
